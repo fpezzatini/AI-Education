@@ -26,6 +26,11 @@
   audio { width:100%; margin-top:8px; }
   a { color:#7dd3fc; }
   small { color:var(--mut); }
+  .sel { background:#1d2029; border-radius:12px; padding:10px 14px; margin:10px 0; display:flex; flex-wrap:wrap; gap:18px; align-items:center; }
+  .sel input[type=checkbox] { width:28px; height:28px; margin-right:8px; }
+  .sel .lp { display:flex; align-items:center; font-size:1.05rem; font-weight:700; }
+  .sel .per { display:flex; flex-direction:column; gap:4px; font-size:.85rem; color:var(--mut); min-width:220px; }
+  .sel .per.off { opacity:.45; }
 </style>
 </head>
 <body>
@@ -45,18 +50,24 @@
   <label>Asse orizzontale <select id="axX"></select></label>
   <label>Asse verticale <select id="axY"></select></label>
   <label>Durata dei frammenti
-    <select id="grain"><option value="100">100 ms</option><option value="200" selected>200 ms</option><option value="400">400 ms</option></select>
+    <select id="grain"><option value="100">100 ms (0,1 s)</option><option value="200" selected>200 ms (0,2 s)</option><option value="400">400 ms (0,4 s)</option><option value="800">800 ms (0,8 s)</option></select>
   </label>
-  <label>Quanti vicini (K): <b id="kv">3</b>
+  <label>Grani suonati insieme (K vicini): <b id="kv">3</b>
     <input id="k" type="range" min="1" max="8" step="1" value="3">
-  </label>
-  <label>Ritmo: un frammento ogni <b id="dv">120</b> ms
-    <input id="dens" type="range" min="40" max="400" step="10" value="120">
   </label>
 </div>
 
 <canvas id="map"></canvas>
-<small>Ogni punto è un frammento di suono. Punti vicini = suoni simili. Tocca o trascina sulla mappa: la macchina cerca i K frammenti più vicini al tuo dito (KNN) e ne suona uno a caso.</small>
+<small>Ogni punto è un frammento di suono. Punti vicini = suoni simili. Tieni premuto il dito sulla mappa (anche più dita insieme): la macchina cerca i K frammenti più vicini (KNN) e li suona tutti insieme, sovrapposti.</small>
+
+<div class="sel">
+  <label class="lp"><input type="checkbox" id="loopChk"> 🔁 Loop</label>
+  <label class="per off" id="perBox">Periodo del loop: <b id="dv">120 ms (0,12 s)</b>
+    <input id="dens" type="range" min="40" max="1000" step="10" value="120" disabled>
+  </label>
+</div>
+<small><b>Loop spento:</b> i grani selezionati suonano una volta; se il dito resta fermo c'è silenzio, e si risuona spostando il dito o premendo di nuovo.
+<b>Loop acceso:</b> i grani selezionati si ripetono ogni «periodo» finché tieni premuto. Il periodo è indipendente dalla durata dei frammenti: se è più corto, i grani si sovrappongono.</small>
 
 <div class="panel">
   <button id="voice">🎤 Voce: OFF</button>
@@ -432,18 +443,23 @@ function grainFeatures(x, s, len, sr) {
 /* ================= stato ================= */
 const $ = id => document.getElementById(id);
 const say = t => $("status").textContent = t;
-let ctx, master, recDest, micStream, analyser;
+const fmt = ms => `${ms} ms (${String(ms / 1000).replace(".", ",")} s)`;
+let ctx, master, outBus, recDest, micStream, analyser;
 let sources = [], grains = [], sid = 0, runId = 0;
 let grainMs = 200, K = 3, density = 120, axisX = "bright", axisY = "loud";
 let pca = null, sortedX = new Float64Array(0), sortedY = new Float64Array(0);
 let lastNear = [], voiceOn = false, gate = 0.15, calib = 0, calibMax = 0, recN = 0;
-const ptr = { x: .5, y: .5, down: false }, micPos = { x: .5, y: .5, t: 0 };
+const micPos = { x: .5, y: .5, t: 0 };
+const drivers = new Set(), ptrs = new Map(); let loopOn = false;
 
 function ensureCtx() {
   if (!ctx) {
     ctx = makeCtx();
-    master = ctx.createGain(); master.gain.value = 0.8; master.connect(ctx.destination);
-    recDest = ctx.createMediaStreamDestination(); master.connect(recDest);
+    master = ctx.createGain(); master.gain.value = 0.7;
+    outBus = ctx.createDynamicsCompressor();            // limitatore: tanti grani sovrapposti non distorcono
+    outBus.threshold.value = -14; outBus.knee.value = 8; outBus.ratio.value = 12; outBus.attack.value = 0.003; outBus.release.value = 0.15;
+    master.connect(outBus); outBus.connect(ctx.destination);
+    recDest = ctx.createMediaStreamDestination(); outBus.connect(recDest);
   }
   ctx.resume();
 }
@@ -513,7 +529,7 @@ function renderSources() {
 }
 function removeSource(id) {
   sources = sources.filter(s => s.id !== id); grains = grains.filter(g => g.src.id !== id);
-  computeLayout(); renderSources(); say(`${grains.length} frammenti nella mappa.`);
+  resetSel(); computeLayout(); renderSources(); say(`${grains.length} frammenti nella mappa.`);
 }
 async function analyzeSource(src, my) {
   const buf = src.buffer, sr = buf.sampleRate, x = buf.getChannelData(0);
@@ -536,7 +552,7 @@ async function addBuffers(list) {
   computeLayout(); say(`${grains.length} frammenti nella mappa. Tocca e trascina!`);
 }
 async function reanalyze() {
-  const my = ++runId; grains = []; say("Analisi in corso...");
+  const my = ++runId; grains = []; resetSel(); say("Analisi in corso...");
   for (const s of sources) { await analyzeSource(s, my); if (my !== runId) return; }
   computeLayout(); say(`${grains.length} frammenti nella mappa.`);
 }
@@ -549,10 +565,13 @@ $("files").addEventListener("change", async e => {
   if (ko) say(`${ko} file non leggibili (prova mp3, wav o ogg).`);
   if (list.length) addBuffers(list);
 });
-$("clearAll").addEventListener("click", () => { runId++; sources = []; grains = []; computeLayout(); renderSources(); say("Mappa svuotata."); });
+$("clearAll").addEventListener("click", () => { runId++; sources = []; grains = []; resetSel(); computeLayout(); renderSources(); say("Mappa svuotata."); });
 $("grain").addEventListener("change", e => { grainMs = +e.target.value; reanalyze(); });
 $("k").addEventListener("input", e => { K = +e.target.value; $("kv").textContent = K; });
-$("dens").addEventListener("input", e => { density = +e.target.value; $("dv").textContent = density; });
+$("dens").addEventListener("input", e => { density = +e.target.value; $("dv").textContent = fmt(density); });
+$("loopChk").addEventListener("change", e => {
+  loopOn = e.target.checked; $("dens").disabled = !loopOn; $("perBox").classList.toggle("off", !loopOn);
+});
 
 /* ================= KNN e riproduzione ================= */
 function nearest(px, py, k) {
@@ -566,20 +585,43 @@ function nearest(px, py, k) {
   }
   return best.map(b => b.g);
 }
-function playGrain(g) {
-  const t = ctx.currentTime, a = Math.min(0.008, g.dur / 4);
+let voices = 0; const MAX_VOICES = 48;                 // tetto di voci contemporanee, per non bloccare il tablet
+function playGrain(g, when) {
+  if (voices >= MAX_VOICES) return;
+  const t = Math.max(when || 0, ctx.currentTime), a = Math.min(0.008, g.dur / 4);
   const s = ctx.createBufferSource(), gn = ctx.createGain();
   s.buffer = g.src.buffer;
   gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(1, t + a); gn.gain.linearRampToValueAtTime(0, t + g.dur);
   s.connect(gn); gn.connect(master); s.start(t, g.start, g.dur);
-  g.flash = performance.now();
+  voices++; s.onended = () => { voices--; gn.disconnect(); };   // ogni grano è una voce indipendente: si sovrappongono
+  g.flash = performance.now() + (t - ctx.currentTime) * 1000;
 }
-function fire(px, py) {
+function playSet(list, when) { for (const g of list) playGrain(g, when); }
+const sameSet = (a, b) => a.length === b.length && a.every(g => b.includes(g));
+
+/* Un "driver" è un punto che pilota la mappa: un dito, o la voce.
+   Seleziona i K grani più vicini e li suona quando la selezione cambia (o quando si preme).
+   Con Loop acceso li ripete ogni "periodo" finché il driver è attivo; con Loop spento suonano una sola volta. */
+const newDriver = (x, y) => ({ x, y, sel: [], nextAt: 0, lastChange: -1 });
+function stepDriver(d) {
   if (!grains.length) return;
   ensureCtx();
-  lastNear = nearest(px, py, K);
-  playGrain(lastNear[Math.floor(Math.random() * lastNear.length)]);
+  const now = ctx.currentTime, per = density / 1000;
+  const near = nearest(d.x, d.y, K);
+  if (!sameSet(near, d.sel) && now - d.lastChange >= 0.04) {
+    d.sel = near; d.lastChange = now; d.nextAt = now + per;
+    playSet(near, now);
+    return;
+  }
+  if (loopOn && d.sel.length) {                          // ripetizioni programmate sull'orologio audio: ritmo preciso
+    if (d.nextAt < now) d.nextAt = now;
+    while (d.nextAt < now + 0.15) { playSet(d.sel, d.nextAt); d.nextAt += per; }
+  }
 }
+setInterval(() => { for (const d of drivers) stepDriver(d); }, 25);
+function resetSel() { for (const d of drivers) d.sel = []; }
+const voiceD = newDriver(.5, .5);
+function dropVoice() { drivers.delete(voiceD); voiceD.sel = []; }
 
 /* ================= disegno e tocco ================= */
 const cv = $("map"), c2 = cv.getContext("2d");
@@ -588,15 +630,17 @@ function resize() { dpr = window.devicePixelRatio || 1; cv.width = cv.clientWidt
 window.addEventListener("resize", resize); resize();
 const PAD = 0.04;
 const toPx = (v, size) => (PAD + (1 - 2 * PAD) * v) * size;
-function fromEvent(e) {
+function setXY(p, e) {
   const r = cv.getBoundingClientRect();
-  ptr.x = clamp(((e.clientX - r.left) / r.width - PAD) / (1 - 2 * PAD));
-  ptr.y = clamp(1 - ((e.clientY - r.top) / r.height - PAD) / (1 - 2 * PAD));
+  p.x = clamp(((e.clientX - r.left) / r.width - PAD) / (1 - 2 * PAD));
+  p.y = clamp(1 - ((e.clientY - r.top) / r.height - PAD) / (1 - 2 * PAD));
 }
-function pointerLoop() { if (!ptr.down) return; fire(ptr.x, ptr.y); setTimeout(pointerLoop, density); }
-cv.addEventListener("pointerdown", e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); ptr.down = true; fromEvent(e); pointerLoop(); });
-cv.addEventListener("pointermove", e => { if (ptr.down) fromEvent(e); });
-const up = () => { ptr.down = false; };
+cv.addEventListener("pointerdown", e => {                // più dita contemporanee = più voci (polifonia)
+  e.preventDefault(); cv.setPointerCapture(e.pointerId);
+  const d = newDriver(.5, .5); setXY(d, e); ptrs.set(e.pointerId, d); drivers.add(d); stepDriver(d);
+});
+cv.addEventListener("pointermove", e => { const d = ptrs.get(e.pointerId); if (d) setXY(d, e); });
+const up = e => { const d = ptrs.get(e.pointerId); if (d) { drivers.delete(d); ptrs.delete(e.pointerId); } };
 cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
 
 function draw() {
@@ -605,15 +649,15 @@ function draw() {
   c2.strokeStyle = "#2a2e3a"; c2.lineWidth = dpr;
   c2.beginPath(); c2.moveTo(W / 2, 0); c2.lineTo(W / 2, H); c2.moveTo(0, H / 2); c2.lineTo(W, H / 2); c2.stroke();
   for (const g of grains) {
-    const age = now - g.flash, hot = age < 350;
+    const age = now - g.flash, hot = age >= 0 && age < 350;
     c2.beginPath();
     c2.arc(toPx(g.x, W), toPx(1 - g.y, H), (3 + (hot ? 7 * (1 - age / 350) : 0)) * dpr, 0, 6.2832);
     c2.fillStyle = hot ? "#fff" : g.src.color; c2.globalAlpha = hot ? 1 : 0.75; c2.fill();
   }
   c2.globalAlpha = 1;
   c2.strokeStyle = "#fff"; c2.lineWidth = 2 * dpr;
-  for (const g of lastNear) { c2.beginPath(); c2.arc(toPx(g.x, W), toPx(1 - g.y, H), 8 * dpr, 0, 6.2832); c2.stroke(); }
-  if (ptr.down) { c2.beginPath(); c2.arc(toPx(ptr.x, W), toPx(1 - ptr.y, H), 16 * dpr, 0, 6.2832); c2.stroke(); }
+  for (const d of drivers) for (const g of d.sel) { c2.beginPath(); c2.arc(toPx(g.x, W), toPx(1 - g.y, H), 8 * dpr, 0, 6.2832); c2.stroke(); }
+  for (const d of ptrs.values()) { c2.beginPath(); c2.arc(toPx(d.x, W), toPx(1 - d.y, H), 18 * dpr, 0, 6.2832); c2.stroke(); }
   if (voiceOn && now - micPos.t < 400) { c2.fillStyle = "#4ecdc4"; c2.beginPath(); c2.arc(toPx(micPos.x, W), toPx(1 - micPos.y, H), 10 * dpr, 0, 6.2832); c2.fill(); }
   c2.fillStyle = "#8b90a0"; c2.font = `${12 * dpr}px system-ui`;
   const ax = AXES[axisX], ay = AXES[axisY];
@@ -651,15 +695,15 @@ function micTick() {
   }
   $("lvl").style.width = (level * 100) + "%";
   const now = performance.now();
-  if (voiceOn && grains.length && level > gate && now - lastVoice >= density) {
+  if (voiceOn && grains.length && level > gate) {         // la voce muove un punto sulla mappa, come un dito
     const v = frameFeatures(tb, 0, ctx.sampleRate);
     micPos.x = pct(sortedX, AXES[axisX].fn(v)); micPos.y = pct(sortedY, AXES[axisY].fn(v)); micPos.t = now;
-    lastVoice = now; fire(micPos.x, micPos.y);
-  }
+    voiceD.x = micPos.x; voiceD.y = micPos.y; drivers.add(voiceD);
+  } else if (drivers.has(voiceD)) dropVoice();
 }
 $("voice").addEventListener("click", async () => {
   if (!voiceOn && !(await ensureMic())) return;
-  voiceOn = !voiceOn;
+  voiceOn = !voiceOn; if (!voiceOn) dropVoice();
   $("voice").textContent = "🎤 Voce: " + (voiceOn ? "ON" : "OFF"); $("voice").classList.toggle("on", voiceOn);
   if (voiceOn) say("Modalità voce attiva: usa le cuffie e fai un suono.");
 });
@@ -706,14 +750,14 @@ function startPerf() {
     perfFrames += e.inputBuffer.length;
   };
   perfSink = ctx.createGain(); perfSink.gain.value = 0;      // il nodo deve essere collegato all'uscita per funzionare, ma muto
-  master.connect(perfNode); perfNode.connect(perfSink); perfSink.connect(ctx.destination);
+  (outBus || master).connect(perfNode); perfNode.connect(perfSink); perfSink.connect(ctx.destination);
   perfOn = true;
   $("perf").textContent = "■ Stop (max 3 minuti)";
   perfTimer = setTimeout(() => { if (perfOn) stopPerf(); }, MAX_TAKE_S * 1000);
 }
 async function stopPerf() {
   clearTimeout(perfTimer); perfOn = false;
-  try { master.disconnect(perfNode); perfNode.disconnect(); perfSink.disconnect(); } catch {}
+  try { (outBus || master).disconnect(perfNode); perfNode.disconnect(); perfSink.disconnect(); } catch {}
   perfNode.onaudioprocess = null;
   $("perf").textContent = "● Registra la performance";
   if (!perfFrames) { say("Take vuoto."); return; }
