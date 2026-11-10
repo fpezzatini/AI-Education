@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Allena la macchina</title>
+<style>
+  :root { --bg:#14161c; --fg:#f2f2f2; --mut:#8b90a0; --c0:#ff6b6b; --c1:#4ecdc4; --c2:#ffd93d; --c3:#a78bfa; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:12px; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
+  h1 { font-size:1.2rem; margin:0 0 8px; }
+  button, .btn { font:inherit; color:var(--fg); background:#2a2e3a; border:0; border-radius:10px; padding:10px 14px; }
+  #start { width:100%; background:#3b82f6; font-size:1.1rem; padding:14px; margin-bottom:10px; }
+  .row { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  @media (min-width:800px){ .row { grid-template-columns:repeat(4,1fr); } }
+  .card { background:#1d2029; border-radius:14px; padding:10px; border-top:6px solid var(--c); }
+  .rec { width:100%; height:90px; font-size:1.05rem; background:var(--c); color:#111; font-weight:700;
+         touch-action:none; user-select:none; -webkit-user-select:none; }
+  .rec.on { filter:brightness(1.3); outline:4px solid #fff; }
+  .meta { display:flex; justify-content:space-between; font-size:.85rem; color:var(--mut); margin:6px 0; }
+  .bar { height:10px; background:#2a2e3a; border-radius:5px; overflow:hidden; }
+  .bar > i { display:block; height:100%; width:0; background:var(--c); }
+  .card.active { box-shadow:0 0 0 3px var(--c); }
+  .btn { display:block; text-align:center; margin-top:8px; font-size:.85rem; }
+  .tools { margin:12px 0; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  #status { color:var(--mut); font-size:.9rem; margin:8px 0; min-height:1.2em; }
+  audio { width:100%; margin-top:8px; }
+  a { color:#7dd3fc; }
+  .name { width:100%; margin-bottom:8px; background:#2a2e3a; color:var(--fg); border:0; border-radius:8px; padding:8px; font:inherit; font-weight:700; }
+</style>
+</head>
+<body>
+<h1>Allena la macchina</h1>
+<button id="start">1. Attiva il microfono</button>
+<div id="status">Premi il pulsante per iniziare.</div>
+<div style="position:relative;margin:6px 0 10px">
+  <div class="bar" style="height:16px"><i id="lvl" style="background:#fff"></i></div>
+  <div id="gm" style="position:absolute;top:-3px;width:3px;height:22px;background:#ff6b6b;left:15%"></div>
+  <small style="color:#8b90a0">Livello del microfono (barra bianca). La linea rossa è la soglia: il suono deve superarla.</small>
+</div>
+
+<div class="row" id="cards"></div>
+
+<div class="tools">
+  <label>Soglia silenzio <input id="gate" type="range" min="0.02" max="0.8" step="0.01" value="0.15"></label>
+  <button id="clear">Cancella tutto</button>
+  <button id="perf">● Registra la performance</button>
+</div>
+<div id="out"></div>
+
+<p style="color:#8b90a0;font-size:.85rem">
+  Tieni premuto un pulsante colorato e fai un suono (almeno 3 secondi, variandolo un po'). Ripeti per ogni classe.
+  Poi smetti di premere e suona: la macchina riconosce il suono e fa partire un campione.
+</p>
+
+<script>
+"use strict";
+const NAMES  = ["Classe 1","Classe 2","Classe 3","Classe 4"];
+try {                                    // recupero i nomi scelti in precedenza, se il browser li ha salvati
+  const s = JSON.parse(localStorage.getItem("classNames"));
+  if (Array.isArray(s) && s.length === 4) s.forEach((n, i) => NAMES[i] = String(n).slice(0, 20));
+} catch {}
+const COLORS = ["#ff6b6b","#4ecdc4","#ffd93d","#a78bfa"];
+const NOTES  = [262,330,392,523];       // suono di riserva se non ci sono file
+const K = 5, MAX_PER_CLASS = 300, FRAME_MS = 40, FFT = 2048;
+
+let ctx, analyser, master, recDest, mediaRec, chunks = [];
+const dataset = [];                     // {f:[...], label}
+const buffers = [[],[],[],[]];          // AudioBuffer per classe
+let recordingClass = -1, current = -1, history = [], silentFrames = 0, lastTrigger = 0;
+let gate = 0.15, calibFrames = 0, calibMax = 0;
+
+const $ = id => document.getElementById(id);
+const status = t => $("status").textContent = t;
+
+/* ---------- interfaccia ---------- */
+const cards = $("cards");
+for (let i = 0; i < 4; i++) {
+  const d = document.createElement("div");
+  d.className = "card"; d.id = "card" + i; d.style.setProperty("--c", COLORS[i]);
+  d.innerHTML = `
+    <input class="name" id="name${i}" value="${NAMES[i]}" maxlength="20" aria-label="Nome della classe ${i + 1}">
+    <button class="rec" id="rec${i}">● tieni premuto<br><small>per insegnare</small></button>
+    <div class="meta"><span>esempi: <b id="n${i}">0</b></span><span>suoni: <b id="s${i}">0</b></span></div>
+    <div class="bar"><i id="p${i}"></i></div>
+    <button class="btn" style="width:100%" onclick="testSound(${i})">▶ Prova il suono</button>
+    <label class="btn">Scegli suoni
+      <input type="file" id="f${i}" accept="audio/*" multiple hidden>
+    </label>
+    <button class="btn" style="width:100%" onclick="clearSounds(${i})">🗑 Svuota suoni</button>`;
+  cards.appendChild(d);
+  const b = d.querySelector(".rec");
+  b.addEventListener("pointerdown", e => { e.preventDefault(); b.setPointerCapture(e.pointerId); startRec(i); });
+  const stop = () => stopRec(i);
+  b.addEventListener("pointerup", stop);
+  b.addEventListener("pointercancel", stop);
+  b.addEventListener("contextmenu", e => e.preventDefault());
+  d.querySelector("input[type=file]").addEventListener("change", e => { loadFiles(i, e.target.files); e.target.value = ""; });
+  d.querySelector(".name").addEventListener("input", e => {
+    NAMES[i] = e.target.value.trim() || ("Classe " + (i + 1));
+    try { localStorage.setItem("classNames", JSON.stringify(NAMES)); } catch {}
+  });
+}
+function setGate(v) { gate = v; $("gate").value = v; $("gm").style.left = (v * 100) + "%"; }
+$("gate").addEventListener("input", e => setGate(+e.target.value));
+function clearSounds(i) {
+  const n = buffers[i].length;
+  buffers[i].length = 0;
+  updateCounts();
+  status(n ? `${NAMES[i]}: ${n} suoni rimossi. Ora suona la nota di riserva.` : `${NAMES[i]}: non c'erano suoni da rimuovere.`);
+}
+function testSound(i) { if (!ctx) return status("Attiva prima il microfono."); ctx.resume(); lastTrigger = 0; trigger(i); }
+$("clear").addEventListener("click", () => { dataset.length = 0; updateCounts(); status("Dataset cancellato."); });
+function updateCounts() {
+  for (let i = 0; i < 4; i++) {
+    $("n" + i).textContent = dataset.filter(d => d.label === i).length;
+    $("s" + i).textContent = buffers[i].length;
+  }
+}
+
+/* ---------- audio e microfono ---------- */
+$("start").addEventListener("click", async () => {
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    // disattivo i filtri automatici: altrimenti Android "ripulisce" i suoni e rovina il dataset
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+    });
+    const src = ctx.createMediaStreamSource(stream);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = FFT; analyser.smoothingTimeConstant = 0;
+    src.connect(analyser);                       // NON collegato all'uscita: niente feedback
+    master = ctx.createGain(); master.gain.value = 0.8;
+    master.connect(ctx.destination);
+    recDest = ctx.createMediaStreamDestination();
+    master.connect(recDest);
+    setInterval(frame, FRAME_MS);
+    $("start").style.display = "none";
+    status("Calibrazione: stai in silenzio per un secondo...");
+  } catch (err) {
+    status("Microfono non disponibile: " + err.message + " (serve HTTPS e il permesso).");
+  }
+});
+
+/* ---------- caratteristiche del suono ---------- */
+const tbuf = new Float32Array(FFT), fbuf = new Float32Array(FFT / 2);
+const clamp = x => Math.max(0, Math.min(1, x));
+function features() {
+  analyser.getFloatTimeDomainData(tbuf);
+  analyser.getFloatFrequencyData(fbuf);
+  let s = 0, z = 0;
+  for (let i = 0; i < FFT; i++) { s += tbuf[i] * tbuf[i]; if (i && (tbuf[i] >= 0) !== (tbuf[i-1] >= 0)) z++; }
+  const rms = Math.sqrt(s / FFT);
+  const level = clamp((20 * Math.log10(rms + 1e-9) + 60) / 60);      // 0..1 (da -60 dB a 0 dB)
+  const sr = ctx.sampleRate, hz = sr / FFT;
+  let num = 0, den = 0;
+  const edges = [0, 300, 1000, 3000, 8000], bands = [0,0,0,0], cnt = [0,0,0,0];
+  for (let i = 1; i < fbuf.length; i++) {
+    const f = i * hz, m = Math.pow(10, fbuf[i] / 20);
+    num += f * m; den += m;
+    for (let b = 0; b < 4; b++) if (f >= edges[b] && f < edges[b+1]) { bands[b] += fbuf[i]; cnt[b]++; }
+  }
+  const centroid = clamp(Math.log2((num / (den + 1e-12) + 100) / 100) / Math.log2(100));
+  const bandN = bands.map((v, b) => clamp(((v / Math.max(1, cnt[b])) + 100) / 80));
+  return { level, vec: [level, clamp(z / FFT * 6), centroid, ...bandN] };
+}
+
+/* ---------- KNN fatto a mano ---------- */
+function predict(vec) {
+  const n = dataset.length, probs = [0,0,0,0];
+  if (n === 0) return probs;
+  const d = dataset.map(p => {
+    let s = 0; for (let i = 0; i < vec.length; i++) { const t = vec[i] - p.f[i]; s += t * t; }
+    return { dist: Math.sqrt(s), label: p.label };
+  }).sort((a, b) => a.dist - b.dist).slice(0, Math.min(K, n));
+  let tot = 0;
+  for (const x of d) { const w = 1 / (x.dist + 0.01); probs[x.label] += w; tot += w; }
+  return probs.map(v => v / tot);
+}
+
+/* ---------- ciclo principale ---------- */
+function frame() {
+  if (!analyser) return;
+  const { level, vec } = features();
+  // calibrazione: nel primo secondo misuro il rumore di fondo e metto la soglia poco sopra
+  if (calibFrames < 25) {
+    calibMax = Math.max(calibMax, level);
+    if (++calibFrames === 25) {
+      setGate(Math.min(0.7, Math.max(0.05, calibMax + 0.08)));
+      status("Pronto. Usa le cuffie per evitare che i suoni rientrino nel microfono.");
+    }
+    return;
+  }
+  $("lvl").style.width = (level * 100) + "%";
+  const loud = level > gate;
+
+  if (recordingClass >= 0 && loud) {                         // addestramento: salvo il frame con la sua etichetta
+    const n = dataset.filter(d => d.label === recordingClass).length;
+    if (n < MAX_PER_CLASS) { dataset.push({ f: vec, label: recordingClass }); updateCounts(); }
+  }
+
+  let probs = [0,0,0,0], cls = -1;
+  if (loud && dataset.length && recordingClass < 0) {        // ascolto: classifico
+    probs = predict(vec);
+    cls = probs.indexOf(Math.max(...probs));
+  }
+  for (let i = 0; i < 4; i++) {
+    $("p" + i).style.width = (probs[i] * 100) + "%";
+    $("card" + i).classList.toggle("active", i === current);
+  }
+
+  // stabilizzo: serve una maggioranza negli ultimi 6 frame, così un frame sbagliato non fa partire nulla
+  history.push(cls); if (history.length > 4) history.shift();
+  silentFrames = (cls === -1) ? silentFrames + 1 : 0;
+  if (silentFrames >= 6) current = -1;
+  for (let c = 0; c < 4; c++) {
+    if (history.filter(h => h === c).length >= 3 && c !== current) {
+      current = c; trigger(c); break;
+    }
+  }
+}
+
+/* ---------- registrazione esempi ---------- */
+function startRec(i) { if (!analyser) return status("Attiva prima il microfono."); recordingClass = i; $("rec" + i).classList.add("on"); }
+function stopRec(i)  { recordingClass = -1; $("rec" + i).classList.remove("on"); updateCounts(); }
+
+/* ---------- caricamento file ---------- */
+async function loadFiles(i, files) {
+  if (!ctx) return status("Attiva prima il microfono.");
+  let ok = 0, ko = 0;
+  for (const f of files) {
+    try { buffers[i].push(await ctx.decodeAudioData(await f.arrayBuffer())); ok++; }
+    catch { ko++; }
+  }
+  updateCounts();
+  status(`${NAMES[i]}: ${ok} suoni caricati` + (ko ? `, ${ko} non leggibili (prova mp3, wav o ogg).` : "."));
+}
+
+/* ---------- MOTORE SONORO ----------
+   Punto unico da sostituire con il patch RNBO:
+   device.messageEvent(new RNBO.MessageEvent(RNBO.TimeNow, "classe", [c]));
+   Qui il suono è Web Audio: campione a caso della classe, o nota di riserva. */
+function trigger(c) {
+  const now = performance.now();
+  if (now - lastTrigger < 150) return;
+  lastTrigger = now;
+  const list = buffers[c];
+  if (list.length) {
+    const s = ctx.createBufferSource();
+    s.buffer = list[Math.floor(Math.random() * list.length)];
+    s.connect(master); s.start();
+  } else {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "triangle"; o.frequency.value = NOTES[c];
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+    o.connect(g); g.connect(master); o.start(); o.stop(ctx.currentTime + 0.55);
+  }
+}
+
+/* ---------- registra la performance ---------- */
+$("perf").addEventListener("click", () => {
+  if (!recDest) return status("Attiva prima il microfono.");
+  if (mediaRec && mediaRec.state === "recording") { mediaRec.stop(); return; }
+  chunks = [];
+  mediaRec = new MediaRecorder(recDest.stream);
+  mediaRec.ondataavailable = e => chunks.push(e.data);
+  mediaRec.onstop = () => {
+    const blob = new Blob(chunks, { type: mediaRec.mimeType });
+    const url = URL.createObjectURL(blob);
+    const ext = blob.type.includes("ogg") ? "ogg" : "webm";
+    $("out").insertAdjacentHTML("afterbegin",
+      `<audio controls src="${url}"></audio><a download="take_${Date.now()}.${ext}" href="${url}">Scarica il take</a>`);
+    $("perf").textContent = "● Registra la performance";
+    status("Take salvato qui sotto.");
+  };
+  mediaRec.start();
+  $("perf").textContent = "■ Stop";
+});
+</script>
+</body>
+</html>
