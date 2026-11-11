@@ -85,14 +85,15 @@
   <button id="seqUndo" disabled>↩ Togli ultimo</button>
   <button id="seqClear" disabled>🗑 Svuota</button>
   <button id="seqSave" disabled>💾 Memorizza</button>
-  <label class="per">Velocità: <b id="bpmv">120 BPM (0,5 s)</b>
-    <input id="bpm" type="range" min="20" max="300" step="1" value="120">
+  <label class="per">Periodo di ogni passo: <b id="seqPerV">0,5 s</b>
+    <input id="seqPerIn" type="range" min="0" max="1000" step="1" value="358">
+    <span style="display:flex;justify-content:space-between"><span>3 s (lento)</span><span>0,02 s (veloce)</span></span>
   </label>
   <span id="seqInfo" style="color:#8b90a0;font-size:.9rem">nessun punto</span>
 </div>
 <div id="slots"></div>
 <small><b>Sequencer di grani:</b> attiva «Sequenza» e tocca i punti della mappa uno dopo l'altro. La sequenza parte dal primo punto e aggiunge quelli nuovi mentre suona, in loop. Una linea unisce i punti e il cursore che corre sulla linea è il playhead.
-Il tempo è in BPM, con il periodo di ogni passo in secondi tra parentesi. «Memorizza» salva la sequenza in un pulsante da cui puoi richiamarla (✕ per cancellarla) fino a quando chiudi la pagina.
+La velocità è il periodo di ogni passo, da 3 secondi (lento) a 0,02 secondi (veloce). «Memorizza» salva la sequenza in un pulsante da cui puoi richiamarla (✕ per cancellarla) fino a quando chiudi la pagina.
 Spegnendo «Sequenza» puoi suonare sopra con il dito mentre il loop continua.</small>
 
 <div class="panel">
@@ -474,7 +475,7 @@ let ctx, master, outBus, recDest, micStream, analyser;
 let sources = [], grains = [], sid = 0, runId = 0;
 let grainMs = 200, K = 3, density = 120, axisX = "bright", axisY = "loud";
 let pca = null, sortedX = new Float64Array(0), sortedY = new Float64Array(0);
-let bpm = 120, seqMode = false, dirty = false, slots = [], slotN = 0, slotId = 0, curSlot = null;
+let seqPer = 0.5, seqMode = false, dirty = false, slots = [], slotN = 0, slotId = 0, curSlot = null;
 const seq = { steps: [], playing: false, idx: 0, nextAt: 0, log: [] };
 let lastNear = [], voiceOn = false, gate = 0.15, calib = 0, calibMax = 0, recN = 0;
 const micPos = { x: .5, y: .5, t: 0 };
@@ -654,7 +655,7 @@ const HIT_PX = 40;                                       // raggio (in px) entro
 function stepSeq() {                                     // programma i passi sull'orologio audio, in loop
   const q = seq;
   if (!ctx || !q.playing || !q.steps.length) return;
-  const now = ctx.currentTime, per = 60 / bpm;
+  const now = ctx.currentTime, per = seqPer;
   if (!q.nextAt || q.nextAt < now - 0.05) q.nextAt = now + 0.02;
   while (q.nextAt < now + 0.15) {
     q.idx %= q.steps.length;
@@ -665,7 +666,12 @@ function stepSeq() {                                     // programma i passi su
   if (q.log.length > 16) q.log.splice(0, q.log.length - 16);
 }
 function markDirty() { dirty = true; curSlot = null; renderSlots(); }
-function updateBpmLabel() { $("bpmv").textContent = `${bpm} BPM (${fs2(60 / bpm)} s)`; }
+/* periodo del passo: scala logaritmica da 3 s (cursore a sinistra) a 0,02 s (a destra), così anche i valori veloci si regolano con precisione */
+const PER_MAX = 3, PER_MIN = 0.02;
+const perFromT = t => { const p = PER_MAX * Math.pow(PER_MIN / PER_MAX, t / 1000); return p < 0.1 ? Math.round(p * 1000) / 1000 : Math.round(p * 100) / 100; };
+const tFromPer = p => Math.round(1000 * Math.log(p / PER_MAX) / Math.log(PER_MIN / PER_MAX));
+const fmtPer = p => String(p).replace(".", ",") + " s";
+function setPer(p) { seqPer = p; $("seqPerIn").value = tFromPer(p); $("seqPerV").textContent = fmtPer(p); }
 function updateSeqUI() {
   const n = seq.steps.length;
   for (const id of ["seqPlay", "seqUndo", "seqClear", "seqSave"]) $(id).disabled = !n;
@@ -721,14 +727,14 @@ $("seqClear").addEventListener("click", () => {
   seq.steps = []; seq.playing = false; seq.log = []; seq.nextAt = 0; seq.idx = 0;
   markDirty(); updateSeqUI(); say("Sequenza svuotata.");
 });
-$("bpm").addEventListener("input", e => { bpm = +e.target.value; updateBpmLabel(); if (seq.steps.length) markDirty(); });
+$("seqPerIn").addEventListener("input", e => { seqPer = perFromT(+e.target.value); $("seqPerV").textContent = fmtPer(seqPer); if (seq.steps.length) markDirty(); });
 
 /* ---- memoria delle sequenze (solo per questa sessione) ---- */
 function renderSlots() {
   const box = $("slots"); box.textContent = "";
   for (const sl of slots) {
     const w = document.createElement("span"); w.className = "slot" + (sl.id === curSlot ? " active" : "");
-    const b = document.createElement("button"); b.textContent = `▶ ${sl.name} · ${sl.steps.length} pt · ${sl.bpm} BPM`; b.onclick = () => recall(sl.id);
+    const b = document.createElement("button"); b.textContent = `▶ ${sl.name} · ${sl.steps.length} pt · ${fmtPer(sl.per)}`; b.onclick = () => recall(sl.id);
     const x = document.createElement("button"); x.textContent = "✕"; x.title = "Cancella"; x.setAttribute("aria-label", "Cancella " + sl.name); x.onclick = () => delSlot(sl.id);
     w.append(b, x); box.appendChild(w);
   }
@@ -736,7 +742,7 @@ function renderSlots() {
 $("seqSave").addEventListener("click", () => {
   if (!seq.steps.length) return;
   if (slots.length >= 8) return say("Puoi memorizzare al massimo 8 sequenze: cancellane una con ✕.");
-  const sl = { id: ++slotId, name: "Seq " + (++slotN), steps: [...seq.steps], bpm };
+  const sl = { id: ++slotId, name: "Seq " + (++slotN), steps: [...seq.steps], per: seqPer };
   slots.push(sl); dirty = false; curSlot = sl.id; renderSlots();
   say(`«${sl.name}» memorizzata: ora trovi il suo pulsante qui sotto per richiamarla.`);
 });
@@ -744,7 +750,7 @@ function recall(id) {
   const sl = slots.find(x => x.id === id); if (!sl) return;
   if (dirty && seq.steps.length && !confirm("La sequenza attuale non è memorizzata e verrà sostituita. Continuare?")) return;
   ensureCtx();
-  seq.steps = [...sl.steps]; bpm = sl.bpm; $("bpm").value = bpm; updateBpmLabel();
+  seq.steps = [...sl.steps]; setPer(sl.per);
   seq.playing = true; seq.idx = 0; seq.nextAt = 0; seq.log = [];
   dirty = false; curSlot = id; renderSlots(); updateSeqUI();
   say(`«${sl.name}» richiamata.`);
@@ -812,7 +818,7 @@ function drawSeq(W, H) {
   while (log.length > 1 && log[1].t <= now) log.shift();
   if (log.length && log[0].t <= now && log[0].idx < st.length) {
     const h = log[0], g = st[h.idx], nx = st[(h.idx + 1) % st.length];
-    const per = log[1] ? log[1].t - h.t : 60 / bpm, age = now - h.t;
+    const per = log[1] ? log[1].t - h.t : seqPer, age = now - h.t;
     const [x0, y0] = P(g), [x1, y1] = P(nx);
     if (st.length > 1) {                                 // segmento in corso evidenziato
       c2.strokeStyle = "#fff"; c2.lineWidth = 4 * dpr; c2.globalAlpha = .9;
@@ -878,7 +884,7 @@ function draw() {
   requestAnimationFrame(draw);
 }
 draw();
-updateSeqUI(); updateBpmLabel();                         // dopo la dichiarazione di cv
+updateSeqUI(); setPer(seqPer);                           // dopo la dichiarazione di cv
 
 /* ================= microfono: registrazione nel corpus e modalità voce ================= */
 async function ensureMic() {
