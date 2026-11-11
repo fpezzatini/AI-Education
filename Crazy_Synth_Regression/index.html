@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crazy Synth!</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #1e293b;
+            --accent: #38bdf8;
+            --accent-pink: #ec4899;
+            --accent-green: #10b981;
+            --accent-red: #f43f5e;
+            --text: #f8fafc;
+            --subtext: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            color: var(--accent);
+            text-align: center;
+        }
+
+        .subtitle {
+            color: var(--subtext);
+            margin-top: -10px;
+            font-size: 0.95rem;
+            text-align: center;
+        }
+
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            max-width: 1200px;
+            width: 100%;
+            justify-content: center;
+        }
+
+        .panel {
+            background: var(--panel);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        /* PAD XY AREA */
+        .xy-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            flex: 1;
+            min-width: 320px;
+            max-width: 400px;
+        }
+
+        .pad-wrapper {
+            position: relative;
+            width: 300px;
+            height: 300px;
+        }
+
+        #xyPad {
+            width: 300px;
+            height: 300px;
+            background: #090d16;
+            border: 2px solid var(--accent);
+            border-radius: 12px;
+            cursor: crosshair;
+            position: relative;
+            touch-action: none;
+        }
+
+        #xyPad.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .pad-status {
+            font-size: 0.8rem;
+            color: var(--accent-red);
+            font-weight: 600;
+            text-align: center;
+            min-height: 20px;
+        }
+
+        .corner-label {
+            position: absolute;
+            font-weight: bold;
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: 6px;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255,255,255,0.1);
+            pointer-events: none;
+        }
+        .tl { top: 8px; left: 8px; color: var(--accent-red); }
+        .tr { top: 8px; right: 8px; color: #3b82f6; }
+        .bl { bottom: 8px; left: 8px; color: #eab308; }
+        .br { bottom: 8px; right: 8px; color: var(--accent-green); }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--accent);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.9rem;
+        }
+
+        button:hover {
+            background: var(--accent);
+            color: var(--bg);
+            box-shadow: 0 0 12px var(--accent);
+        }
+
+        button.active {
+            background: var(--accent-pink);
+            border-color: var(--accent-pink);
+            color: white;
+        }
+
+        button.saved {
+            background: var(--accent-green);
+            color: var(--bg);
+            border-color: var(--accent-green);
+        }
+
+        button.recording {
+            background: var(--accent-red);
+            border-color: var(--accent-red);
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.03); box-shadow: 0 0 15px var(--accent-red); }
+            100% { transform: scale(1); }
+        }
+
+        /* FADER GRID (12 FADER) */
+        .params-container {
+            flex: 2;
+            min-width: 340px;
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 10px;
+            align-items: center;
+            justify-items: center;
+        }
+
+        .fader-card {
+            background: rgba(15, 23, 42, 0.5);
+            padding: 10px 6px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.03);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            height: 100%;
+            width: 100%;
+        }
+
+        .fader-wrapper {
+            height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            width: 100%;
+        }
+
+        input[type=range].vertical-fader {
+            writing-mode: bt-lr; /* IE */
+            -webkit-appearance: slider-vertical; /* WebKit */
+            width: 8px;
+            height: 170px;
+            padding: 0 5px;
+            accent-color: var(--accent);
+            cursor: pointer;
+        }
+
+        .fader-number {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--subtext);
+        }
+
+        /* INSTRUZIONI */
+        .instructions {
+            max-width: 1200px;
+            width: 100%;
+            background: var(--panel);
+            border-left: 4px solid var(--accent-green);
+        }
+
+        .instructions h3 {
+            margin-top: 0;
+            color: var(--accent-green);
+        }
+
+        .instructions ol {
+            margin: 0;
+            padding-left: 20px;
+            line-height: 1.6;
+            color: var(--subtext);
+        }
+
+        .instructions li strong {
+            color: var(--text);
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🎛️ Crazy Synth!</h1>
+    <div class="subtitle">Esplora lo spazio sonoro, registra la tua musica e sperimenta la regressione!</div>
+
+    <div class="container">
+        <!-- PAD XY & MEMORY -->
+        <div class="panel xy-container">
+            <div class="pad-wrapper">
+                <canvas id="xyPad" class="disabled" width="300" height="300"></canvas>
+                <div class="corner-label tl">A</div>
+                <div class="corner-label tr">B</div>
+                <div class="corner-label bl">C</div>
+                <div class="corner-label br">D</div>
+            </div>
+            <div id="padStatus" class="pad-status">⚠️ Salva prima tutti e 4 gli angoli (A, B, C, D) per sbloccare il Pad!</div>
+
+            <div class="btn-group">
+                <button id="btnPlay">▶ PLAY / STOP</button>
+                <button id="btnRecord">🔴 Registra</button>
+                <button id="btnRandom">🎲 Random</button>
+            </div>
+
+            <div class="btn-group">
+                <button id="saveA">Salva A ↖</button>
+                <button id="saveB">Salva B ↗</button>
+                <button id="saveC">Salva C ↙</button>
+                <button id="saveD">Salva D ↘</button>
+            </div>
+        </div>
+
+        <!-- 12 FADER VERTICALI -->
+        <div class="panel params-container" id="fadersContainer">
+            <!-- Generati via JS -->
+        </div>
+    </div>
+
+    <!-- ISTRUZIONI -->
+    <div class="panel instructions">
+        <h3>🚀 Guida Rapida per l'Esploratore del Suono!</h3>
+        <ol>
+            <li><strong>Suona con il Pad:</strong> Tocca e tieni premuto sul <strong>Pad XY</strong> per far partire la nota; solleva il dito per chiuderla!</li>
+            <li><strong>Muovi i 12 Fader:</strong> Fai scorrere i cursori in alto o in basso per scoprire effetti sonori folli e robotici.</li>
+            <li><strong>Crea e Salva i 4 mondi:</strong> Usa il tasto 🎲 <strong>Random</strong> o posiziona i fader a piacimento, poi salvali nei 4 angoli con i tasti <strong>Salva A, B, C, D</strong>. Il Pad XY si sbloccherà!</li>
+            <li><strong>Registra la tua performance:</strong> Premi <strong>🔴 Registra</strong>, suona sul Pad muovendoti tra i 4 angoli, e premi di nuovo per fermare e scaricare il file audio sul tablet!</li>
+            <li><strong>RICORDA!</strong> La regressione è un'applicazione dell'AI che permette alla macchina di unire i puntini e trovare i tasselli mancanti tra i vari dati, calcolando tutti i valori intermedi per creare una transizione fluida.</li>
+        </ol>
+    </div>
+
+    <script>
+        let audioCtx = null;
+        let isPlaying = false;
+
+        // Nodi Web Audio
+        let osc, noiseNode, filter, mainGain, envelopeGain, destinationNode;
+        let tremoloLfo, tremoloGain, vibratoLfo, vibratoGain, chorusDelay, chorusLfo, chorusGain;
+        let bitcrusherNode, ringModOsc, ringModGain;
+
+        // Registratore Audio
+        let mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+
+        let savedCorners = { A: false, B: false, C: false, D: false };
+        let isPadUnlocked = false;
+
+        const paramsList = [
+            { id: 'p1', min: 100, max: 1000, default: 220 },
+            { id: 'p2', min: 100, max: 8000, default: 2500 },
+            { id: 'p3', min: 0, max: 20, default: 0 },
+            { id: 'p4', min: 0, max: 30, default: 0 },
+            { id: 'p5', min: 0, max: 100, default: 0 },
+            { id: 'p6', min: 0, max: 100, default: 0 },
+            { id: 'p7', min: 0.01, max: 2, default: 0.05 },
+            { id: 'p8', min: 0.01, max: 2, default: 0.2 },
+            { id: 'p9', min: 0, max: 1, default: 0.7 },
+            { id: 'p10', min: 0.05, max: 3, default: 0.4 },
+            { id: 'p11', min: 1, max: 16, default: 16 },
+            { id: 'p12', min: 0, max: 1500, default: 0 }
+        ];
+
+        let paramValues = {};
+        paramsList.forEach(p => paramValues[p.id] = p.default);
+
+        let presets = { A: {}, B: {}, C: {}, D: {} };
+        let padPos = { x: 0.5, y: 0.5 };
+
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Nodo di destinazione che permette sia l'ascolto che la registrazione
+            destinationNode = audioCtx.createMediaStreamDestination();
+
+            osc = audioCtx.createOscillator();
+            osc.type = 'sawtooth';
+
+            noiseNode = createPinkNoiseNode();
+            filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+
+            mainGain = audioCtx.createGain();
+            mainGain.gain.value = 0.3;
+
+            envelopeGain = audioCtx.createGain();
+            envelopeGain.gain.value = 0;
+
+            tremoloLfo = audioCtx.createOscillator();
+            tremoloGain = audioCtx.createGain();
+            tremoloLfo.connect(tremoloGain);
+            tremoloGain.connect(mainGain.gain);
+
+            vibratoLfo = audioCtx.createOscillator();
+            vibratoGain = audioCtx.createGain();
+            vibratoLfo.connect(vibratoGain);
+            vibratoGain.connect(osc.frequency);
+
+            chorusDelay = audioCtx.createDelay();
+            chorusLfo = audioCtx.createOscillator();
+            chorusGain = audioCtx.createGain();
+            chorusLfo.frequency.value = 1.5;
+            chorusLfo.connect(chorusDelay.delayTime);
+            chorusLfo.start();
+
+            bitcrusherNode = audioCtx.createScriptProcessor(4096, 1, 1);
+            let bitDepth = 16;
+            bitcrusherNode.onaudioprocess = function(e) {
+                let input = e.inputBuffer.getChannelData(0);
+                let output = e.outputBuffer.getChannelData(0);
+                let step = Math.pow(0.5, bitDepth);
+                for (let i = 0; i < input.length; i++) {
+                    output[i] = Math.floor(input[i] / step) * step;
+                }
+            };
+            bitcrusherNode.setBits = function(b) { bitDepth = b; };
+
+            ringModOsc = audioCtx.createOscillator();
+            ringModGain = audioCtx.createGain();
+            ringModGain.gain.value = 0;
+            ringModOsc.connect(ringModGain.gain);
+            ringModOsc.start();
+
+            osc.connect(filter);
+            noiseNode.connect(filter);
+            filter.connect(ringModGain);
+            ringModGain.connect(bitcrusherNode);
+            
+            bitcrusherNode.connect(mainGain);
+            bitcrusherNode.connect(chorusDelay);
+            chorusDelay.connect(mainGain);
+
+            mainGain.connect(envelopeGain);
+            
+            // Collega sia alle casse che al registratore
+            envelopeGain.connect(audioCtx.destination);
+            envelopeGain.connect(destinationNode);
+
+            osc.start();
+            tremoloLfo.start();
+            vibratoLfo.start();
+
+            updateSynthFromParams();
+        }
+
+        function createPinkNoiseNode() {
+            let bufferSize = 2 * audioCtx.sampleRate;
+            let noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            let output = noiseBuffer.getChannelData(0);
+            let b0=0, b1=0, b2=0, b3=0, b4=0, b5=0, b6=0;
+            for (let i = 0; i < bufferSize; i++) {
+                let white = Math.random() * 2 - 1;
+                b0 = 0.99886 * b0 + white * 0.0555179;
+                b1 = 0.99332 * b1 + white * 0.0750759;
+                b2 = 0.96900 * b2 + white * 0.1538520;
+                b3 = 0.86650 * b3 + white * 0.3104856;
+                b4 = 0.55000 * b4 + white * 0.5329522;
+                b5 = -0.7616 * b5 - white * 0.0168980;
+                output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+                output[i] *= 0.11;
+                b6 = white * 0.115926;
+            }
+            let pinkNoise = audioCtx.createBufferSource();
+            pinkNoise.buffer = noiseBuffer;
+            pinkNoise.loop = true;
+            pinkNoise.start();
+            return pinkNoise;
+        }
+
+        function updateSynthFromParams() {
+            if (!audioCtx) return;
+
+            osc.frequency.setTargetAtTime(paramValues.p1, audioCtx.currentTime, 0.03);
+            filter.frequency.setTargetAtTime(paramValues.p2, audioCtx.currentTime, 0.03);
+            
+            tremoloLfo.frequency.setTargetAtTime(paramValues.p3, audioCtx.currentTime, 0.03);
+            tremoloGain.gain.setTargetAtTime(paramValues.p3 > 0 ? 0.15 : 0, audioCtx.currentTime, 0.03);
+
+            vibratoLfo.frequency.setTargetAtTime(6, audioCtx.currentTime, 0.03);
+            vibratoGain.gain.setTargetAtTime(paramValues.p4 * 2, audioCtx.currentTime, 0.03);
+
+            chorusDelay.delayTime.setTargetAtTime(0.01 + (paramValues.p5 / 10000), audioCtx.currentTime, 0.03);
+            chorusGain.gain.setTargetAtTime(paramValues.p5 / 200, audioCtx.currentTime, 0.03);
+
+            if (bitcrusherNode) bitcrusherNode.setBits(paramValues.p11);
+            if (ringModOsc) ringModOsc.frequency.setTargetAtTime(paramValues.p12, audioCtx.currentTime, 0.03);
+        }
+
+        function computeRegression(x, y) {
+            if (!isPadUnlocked) return;
+            paramsList.forEach(p => {
+                let id = p.id;
+                let valA = presets.A[id];
+                let valB = presets.B[id];
+                let valC = presets.C[id];
+                let valD = presets.D[id];
+
+                let top = valA * (1 - x) + valB * x;
+                let bottom = valC * (1 - x) + valD * x;
+                let finalVal = top * (1 - y) + bottom * y;
+
+                paramValues[id] = finalVal;
+                updateFaderUI(id);
+            });
+
+            updateSynthFromParams();
+        }
+
+        function createFaders() {
+            const container = document.getElementById('fadersContainer');
+            paramsList.forEach((p, idx) => {
+                const card = document.createElement('div');
+                card.className = 'fader-card';
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'fader-wrapper';
+
+                const input = document.createElement('input');
+                input.type = 'range';
+                input.className = 'vertical-fader';
+                input.id = `fader-${p.id}`;
+                input.min = p.min;
+                input.max = p.max;
+                input.step = (p.max - p.min) / 100;
+                input.value = p.default;
+
+                input.addEventListener('input', () => {
+                    paramValues[p.id] = parseFloat(input.value);
+                    updateSynthFromParams();
+                });
+
+                wrapper.appendChild(input);
+
+                const label = document.createElement('div');
+                label.className = 'fader-number';
+                label.innerText = `N. ${idx + 1}`;
+
+                card.appendChild(wrapper);
+                card.appendChild(label);
+                container.appendChild(card);
+            });
+        }
+
+        function updateFaderUI(id) {
+            const input = document.getElementById(`fader-${id}`);
+            if (input) {
+                input.value = paramValues[id];
+            }
+        }
+
+        // --- PAD XY & GESTIONE TOCCO ---
+        const canvas = document.getElementById('xyPad');
+        const ctx = canvas.getContext('2d');
+
+        function drawPad() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+            ctx.lineWidth = 1;
+            for(let i=0; i<300; i+=30) {
+                ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 300); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(300, i); ctx.stroke();
+            }
+
+            if (!isPadUnlocked) return;
+
+            let px = padPos.x * canvas.width;
+            let py = padPos.y * canvas.height;
+
+            ctx.beginPath();
+            ctx.arc(px, py, 14, 0, Math.PI * 2);
+            ctx.fillStyle = isPlaying ? 'var(--accent-pink)' : '#38bdf8';
+            ctx.shadowColor = isPlaying ? 'var(--accent-pink)' : '#38bdf8';
+            ctx.shadowBlur = 15;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+
+        function handlePadMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            let clientX = e.clientX || (e.touches && e.touches[0].clientX);
+            let clientY = e.clientY || (e.touches && e.touches[0].clientY);
+            if (clientX === undefined) return;
+
+            let x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            let y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+
+            padPos = { x, y };
+            drawPad();
+            if (isPadUnlocked) {
+                computeRegression(x, y);
+            }
+        }
+
+        function startNoteFromPad(e) {
+            initAudio();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            // Spegne eventuale Play/Stop manuale per dare priorità al tocco del pad
+            if (isPlaying) {
+                isPlaying = false;
+                document.getElementById('btnPlay').classList.remove('active');
+            }
+
+            handlePadMove(e);
+
+            const now = audioCtx.currentTime;
+            const a = paramValues.p7;
+            const d = paramValues.p8;
+            const s = paramValues.p9;
+
+            envelopeGain.gain.cancelScheduledValues(now);
+            envelopeGain.gain.setValueAtTime(envelopeGain.gain.value, now);
+            envelopeGain.gain.linearRampToValueAtTime(1.0, now + a);
+            envelopeGain.gain.linearRampToValueAtTime(s, now + a + d);
+            
+            isPlaying = true;
+            drawPad();
+        }
+
+        function stopNoteFromPad() {
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            const r = paramValues.p10;
+
+            envelopeGain.gain.cancelScheduledValues(now);
+            envelopeGain.gain.setValueAtTime(envelopeGain.gain.value, now);
+            envelopeGain.gain.linearRampToValueAtTime(0.0, now + r);
+
+            isPlaying = false;
+            document.getElementById('btnPlay').classList.remove('active');
+            drawPad();
+        }
+
+        let isDragging = false;
+
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startNoteFromPad(e);
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (isDragging) handlePadMove(e);
+        });
+        window.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                stopNoteFromPad();
+            }
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            isDragging = true;
+            startNoteFromPad(e);
+            e.preventDefault();
+        });
+        window.addEventListener('touchmove', (e) => {
+            if (isDragging) handlePadMove(e);
+        });
+        window.addEventListener('touchend', () => {
+            if (isDragging) {
+                isDragging = false;
+                stopNoteFromPad();
+            }
+        });
+
+        // --- PLAY / STOP BUTTON ---
+        document.getElementById('btnPlay').addEventListener('click', () => {
+            initAudio();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            const now = audioCtx.currentTime;
+            const a = paramValues.p7;
+            const d = paramValues.p8;
+            const s = paramValues.p9;
+            const r = paramValues.p10;
+
+            if (!isPlaying) {
+                envelopeGain.gain.cancelScheduledValues(now);
+                envelopeGain.gain.setValueAtTime(envelopeGain.gain.value, now);
+                envelopeGain.gain.linearRampToValueAtTime(1.0, now + a);
+                envelopeGain.gain.linearRampToValueAtTime(s, now + a + d);
+                
+                isPlaying = true;
+                document.getElementById('btnPlay').classList.add('active');
+            } else {
+                envelopeGain.gain.cancelScheduledValues(now);
+                envelopeGain.gain.setValueAtTime(envelopeGain.gain.value, now);
+                envelopeGain.gain.linearRampToValueAtTime(0.0, now + r);
+
+                isPlaying = false;
+                document.getElementById('btnPlay').classList.remove('active');
+            }
+            drawPad();
+        });
+
+        // --- REGISTRAZIONE AUDIO (MP3 / WEBM) ---
+        const btnRecord = document.getElementById('btnRecord');
+        btnRecord.addEventListener('click', () => {
+            initAudio();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            if (!isRecording) {
+                // Avvia registrazione
+                recordedChunks = [];
+                try {
+                    mediaRecorder = new MediaRecorder(destinationNode.stream, { mimeType: 'audio/webm' });
+                } catch (err) {
+                    try {
+                        mediaRecorder = new MediaRecorder(destinationNode.stream);
+                    } catch (e) {
+                        alert('Registrazione non supportata su questo browser/dispositivo.');
+                        return;
+                    }
+                }
+
+                mediaRecorder.ondataavailable = function(e) {
+                    if (e.data.size > 0) recordedChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = function() {
+                    const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    a.download = 'crazy-synth-recording.webm';
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    }, 100);
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                btnRecord.innerText = "⏹ Ferma & Salva";
+                btnRecord.classList.add('recording');
+            } else {
+                // Ferma registrazione
+                mediaRecorder.stop();
+                isRecording = false;
+                btnRecord.innerText = "🔴 Registra";
+                btnRecord.classList.remove('recording');
+            }
+        });
+
+        // Randomizer
+        document.getElementById('btnRandom').addEventListener('click', () => {
+            paramsList.forEach(p => {
+                let randVal = Math.random() * (p.max - p.min) + p.min;
+                paramValues[p.id] = randVal;
+                updateFaderUI(p.id);
+            });
+            updateSynthFromParams();
+        });
+
+        // Salvataggio Preset (A, B, C, D)
+        ['A', 'B', 'C', 'D'].forEach(corner => {
+            document.getElementById(`save${corner}`).addEventListener('click', () => {
+                paramsList.forEach(p => {
+                    presets[corner][p.id] = paramValues[p.id];
+                });
+                savedCorners[corner] = true;
+                document.getElementById(`save${corner}`).classList.add('saved');
+
+                if (savedCorners.A && savedCorners.B && savedCorners.C && savedCorners.D) {
+                    isPadUnlocked = true;
+                    canvas.classList.remove('disabled');
+                    document.getElementById('padStatus').innerText = "✨ Pad sbloccato! Toccalo per suonare e muoverti.";
+                    document.getElementById('padStatus').style.color = "var(--accent-green)";
+                    drawPad();
+                } else {
+                    let missing = Object.keys(savedCorners).filter(k => !savedCorners[k]).join(', ');
+                    document.getElementById('padStatus').innerText = `Mancano ancora gli angoli: ${missing}`;
+                }
+            });
+        });
+
+        // Inizializzazione
+        createFaders();
+        drawPad();
+    </script>
+</body>
+</html>
